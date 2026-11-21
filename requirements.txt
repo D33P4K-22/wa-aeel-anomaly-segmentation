@@ -3,4 +3,5 @@ pandas
 numpy
 matplotlib
 Pillow
-opencv-python
+requests
+albumentations
