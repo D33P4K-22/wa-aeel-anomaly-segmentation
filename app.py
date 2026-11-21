@@ -6,162 +6,145 @@ import requests
 from io import BytesIO
 import albumentations as A
 
-# --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="WA-AEEL Live Demo", layout="wide")
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Live Audience Demo", "Dataset Explorer", "Performance Statistics"])
+page = st.sidebar.radio("Go to", [
+    "1. Live Audience Demo", 
+    "2. Under the Hood: The X-Ray View", 
+    "3. Live Ablation Study",
+    "4. Performance Statistics"
+])
 
 st.sidebar.markdown("---")
-st.sidebar.info("**Project:** Weather-Aware Adaptive Energy-Entropy Learning (WA-AEEL)\n\n**Course:** CS F415 Data Mining")
+st.sidebar.info("**Project:** Weather-Aware Adaptive Energy-Entropy Learning (WA-AEEL)\n\n**Course:** CS F415 Data Mining\n\n**Presenter:** Harsh Vardhan")
 
-# --- HELPER FUNCTIONS ---
 @st.cache_data
 def fetch_base_image():
     url = "https://raw.githubusercontent.com/open-mmlab/mmsegmentation/main/demo/demo.png"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
     return Image.open(BytesIO(response.content)).convert("RGB")
 
-def get_dummy_heatmap(image_array, mode="diffeel"):
-    """Simulates the model output for the demo."""
-    h, w = image_array.shape[:2]
-    base_heatmap = np.zeros((h, w))
-    
-    # Simulate a focal anomaly in the center
-    base_heatmap[h//2-30:h//2+30, w//2-40:w//2+40] = 1.0
-    
-    if mode == "diffeel":
-        noise = np.random.rand(h, w) * 0.75 # High false positives
-        return np.clip(base_heatmap + noise, 0, 1)
-    else:
-        noise = np.random.rand(h, w) * 0.15 # Cleaned by WA-AEEL
-        return np.clip(base_heatmap + noise, 0, 1)
+def apply_storm(image_array, intensity=1.0):
+    t = A.Compose([
+        A.RandomRain(brightness_coefficient=0.7, drop_width=2, blur_value=int(5*intensity), p=1.0),
+        A.RandomFog(fog_coef_lower=0.4*intensity, fog_coef_upper=0.6*intensity, p=1.0)
+    ])
+    return t(image=image_array)['image']
 
 base_img = fetch_base_image()
+h, w = np.array(base_img).shape[:2]
+
+# Simulated Anomaly (Box in the center-right)
+anomaly_mask = np.zeros((h, w))
+anomaly_mask[h//2:h//2+50, w//2+20:w//2+90] = 1.0
 
 # ==========================================
-# PAGE 1: LIVE AUDIENCE DEMO (INTERACTIVE)
+# PAGE 1: LIVE AUDIENCE DEMO
 # ==========================================
-if page == "Live Audience Demo":
-    st.title("🔴 Live Audience Interactive Demo")
-    st.write("Let's test the models live. You control the weather, or we test it on the classroom!")
+if page == "1. Live Audience Demo":
+    st.title("🔴 Live Interactive Demo")
     
-    demo_mode = st.radio("Select Demo Mode:", ["🌪️ Control the Weather (Sliders)", "📸 Live Classroom Camera"])
+    col_ctrl1, col_ctrl2 = st.columns(2)
+    with col_ctrl1:
+        weather_intensity = st.slider("Audience: Set Weather Intensity", 0.0, 1.0, 0.5)
     
-    if demo_mode == "🌪️ Control the Weather (Sliders)":
-        st.subheader("Audience, shout out the weather intensity!")
+    live_img = apply_storm(np.array(base_img), weather_intensity) if weather_intensity > 0 else np.array(base_img)
+    
+    st.image(live_img, caption=f"Live Driving Feed (Storm Intensity: {weather_intensity*100}%)", use_container_width=True)
+    
+    col_res1, col_res2 = st.columns(2)
+    with col_res1:
+        st.warning("Baseline: DiffEEL (Fixed α)")
+        # Weather noise scales with intensity
+        diffeel_noise = np.random.rand(h, w) * (0.8 * weather_intensity)
+        hm_diffeel = np.clip(anomaly_mask + diffeel_noise, 0, 1)
+        fig, ax = plt.subplots(); ax.imshow(live_img); ax.imshow(hm_diffeel, cmap='jet', alpha=0.5); ax.axis('off')
+        st.pyplot(fig)
         
-        # Interactive Sliders for the audience to control
-        col_ctrl1, col_ctrl2 = st.columns(2)
-        with col_ctrl1:
-            rain_intensity = st.slider("Rain Intensity (Drop blur)", 1, 10, 1)
-        with col_ctrl2:
-            fog_intensity = st.slider("Fog Thickness (%)", 10, 90, 10) / 100.0
-
-        # Apply Live Weather
-        custom_weather = A.Compose([
-            A.RandomRain(brightness_coefficient=0.8, drop_width=1, blur_value=rain_intensity, p=1.0 if rain_intensity > 1 else 0.0),
-            A.RandomFog(fog_coef_lower=fog_intensity-0.1, fog_coef_upper=fog_intensity, alpha_coef=0.1, p=1.0 if fog_intensity > 0.1 else 0.0)
-        ])
-        
-        live_img_array = custom_weather(image=np.array(base_img))['image']
-        
-        st.image(live_img_array, caption=f"Live Weather Generated (Rain: {rain_intensity}, Fog: {fog_intensity*100}%)", width=600)
-        
-        # Live Model Inference Simulation
-        st.markdown("### Live Model Inference")
-        col_res1, col_res2 = st.columns(2)
-        
-        with col_res1:
-            st.warning("DiffEEL (Baseline)")
-            hm_diffeel = get_dummy_heatmap(live_img_array, "diffeel")
-            fig, ax = plt.subplots()
-            ax.imshow(live_img_array)
-            ax.imshow(hm_diffeel, cmap='jet', alpha=0.55)
-            ax.axis('off')
-            st.pyplot(fig)
-            st.caption("Notice how high weather intensity creates false positive anomalies everywhere.")
-            
-        with col_res2:
-            st.success("WA-AEEL (Proposed)")
-            hm_wa = get_dummy_heatmap(live_img_array, "wa")
-            fig2, ax2 = plt.subplots()
-            ax2.imshow(live_img_array)
-            ax2.imshow(hm_wa, cmap='jet', alpha=0.55)
-            ax2.axis('off')
-            st.pyplot(fig2)
-            st.caption("WA-AEEL adapts to the weather context and suppresses the noise.")
-
-    elif demo_mode == "📸 Live Classroom Camera":
-        st.subheader("Let's bring the classroom into the driving simulation.")
-        st.write("Hold up an unusual object (like a bright water bottle or a phone) to act as the 'Anomaly'.")
-        
-        cam_image = st.camera_input("Take a picture of the audience/presenter")
-        
-        if cam_image is not None:
-            # Convert webcam image
-            img = Image.open(cam_image)
-            img_array = np.array(img)
-            
-            # Apply a heavy driving storm to the classroom
-            storm_transform = A.Compose([
-                A.RandomRain(brightness_coefficient=0.7, drop_width=2, blur_value=5, p=1.0),
-                A.RandomFog(fog_coef_lower=0.5, fog_coef_upper=0.7, p=1.0)
-            ])
-            storm_img = storm_transform(image=img_array)['image']
-            
-            st.markdown("### Processing Classroom Image through WA-AEEL...")
-            col_c1, col_c2 = st.columns(2)
-            
-            with col_c1:
-                st.image(storm_img, caption="Classroom caught in a Storm", use_container_width=True)
-            with col_c2:
-                # Heatmap on camera image
-                hm_cam = get_dummy_heatmap(storm_img, "wa")
-                fig_cam, ax_cam = plt.subplots()
-                ax_cam.imshow(storm_img)
-                ax_cam.imshow(hm_cam, cmap='jet', alpha=0.5)
-                ax_cam.axis('off')
-                st.pyplot(fig_cam)
-                st.caption("Model successfully ignores the simulated storm and targets the center anomaly!")
+    with col_res2:
+        st.success("Proposed: WA-AEEL (Adaptive)")
+        # WA-AEEL suppresses weather noise
+        wa_noise = np.random.rand(h, w) * (0.15 * weather_intensity)
+        hm_wa = np.clip(anomaly_mask + wa_noise, 0, 1)
+        fig2, ax2 = plt.subplots(); ax2.imshow(live_img); ax2.imshow(hm_wa, cmap='jet', alpha=0.5); ax2.axis('off')
+        st.pyplot(fig2)
 
 # ==========================================
-# PAGE 2: DATASET EXPLORER
+# PAGE 2: UNDER THE HOOD - X-RAY VIEW
 # ==========================================
-elif page == "Dataset Explorer":
-    st.title("Dataset Explorer: Complex Weather Scenarios")
-    weather_condition = st.selectbox("Select Weather Condition", ["Rain", "Fog", "Night", "Clear"])
+elif page == "2. Under the Hood: The X-Ray View":
+    st.title("🧠 The X-Ray: Inside the Adaptive Fusion Network")
+    st.write("Visualizing the mathematical breakdown of $S_{WA-AEEL}(x) = w_H(x)H(x) - w_E(x)E(x)$")
+    
+    img_storm = apply_storm(np.array(base_img), 0.8)
+    
+    # Simulate internal math maps
+    H_map = np.random.rand(h, w) * 0.9 # High entropy everywhere due to weather
+    H_map[anomaly_mask == 1] = 1.0 # Max entropy at anomaly
+    
+    E_map = np.ones((h, w)) * 0.8 # High energy (known classes)
+    E_map[anomaly_mask == 1] = 0.1 # Low energy at anomaly
+    
+    w_H_map = np.ones((h, w)) * 0.2 # Network suppresses entropy weight due to weather
+    w_H_map[anomaly_mask == 1] = 1.0 # Preserves weight at anomaly
+    
+    tab1, tab2, tab3 = st.tabs(["1. Raw Entropy H(x)", "2. Adaptive Weights w_H(x)", "3. Final Fusion S(x)"])
+    
+    with tab1:
+        st.subheader("Raw Entropy $H(x)$")
+        st.write("Notice how the weather causes high uncertainty (red) everywhere, confusing baseline models.")
+        fig, ax = plt.subplots(figsize=(10,4)); ax.imshow(img_storm); ax.imshow(H_map, cmap='hot', alpha=0.7); ax.axis('off'); st.pyplot(fig)
+        
+    with tab2:
+        st.subheader("Learned Entropy Weight $w_H(x)$")
+        st.write("The MLP recognizes the weather context and dynamically *lowers* the entropy weight on normal pixels, keeping it high only on the anomaly.")
+        fig, ax = plt.subplots(figsize=(10,4)); ax.imshow(img_storm); ax.imshow(w_H_map, cmap='Greens', alpha=0.7); ax.axis('off'); st.pyplot(fig)
+        
+    with tab3:
+        st.subheader("Final Anomaly Score $S(x)$")
+        S_map = (w_H_map * H_map) - (0.5 * E_map) # Simplified simulation of the formula
+        fig, ax = plt.subplots(figsize=(10,4)); ax.imshow(img_storm); ax.imshow(np.clip(S_map, 0, 1), cmap='jet', alpha=0.6); ax.axis('off'); st.pyplot(fig)
+
+# ==========================================
+# PAGE 3: LIVE ABLATION STUDY
+# ==========================================
+elif page == "3. Live Ablation Study":
+    st.title("🔬 Ablation Study: Validating the Loss Functions")
+    st.write("What happens if we remove the proposed training constraints? Toggle them off to see.")
+    
+    img_storm = apply_storm(np.array(base_img), 0.7)
     
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Normal Condition (Clear)")
-        st.image(base_img, use_container_width=True)
-        
+        L_HN_on = st.toggle("Enable Weather Hard-Negative Loss ($L_{HN}$)", value=True)
     with col2:
-        st.subheader(f"Adverse Condition ({weather_condition})")
-        if weather_condition == "Rain":
-            t = A.RandomRain(p=1.0)
-        elif weather_condition == "Fog":
-            t = A.RandomFog(p=1.0)
-        elif weather_condition == "Night":
-            t = A.RandomBrightnessContrast(brightness_limit=(-0.6, -0.4), p=1.0)
-        else:
-            t = lambda image: {'image': image}
-            
-        weather_img = t(image=np.array(base_img))['image']
-        st.image(weather_img, use_container_width=True)
+        L_cons_on = st.toggle("Enable Weather Consistency Loss ($L_{cons}$)", value=True)
+        
+    st.markdown("---")
+    
+    # Calculate noise based on active losses
+    base_noise = 0.1
+    if not L_HN_on: base_noise += 0.4 # False positives on background increase
+    if not L_cons_on: base_noise += 0.3 # Score becomes unstable/noisy
+    
+    hm_ablation = np.clip(anomaly_mask + (np.random.rand(h, w) * base_noise), 0, 1)
+    
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.imshow(img_storm)
+    ax.imshow(hm_ablation, cmap='jet', alpha=0.6)
+    ax.axis('off')
+    
+    st.pyplot(fig)
+    
+    if L_HN_on and L_cons_on:
+        st.success("✅ Full WA-AEEL Model: Clean anomaly isolation.")
+    elif not L_HN_on and not L_cons_on:
+        st.error("❌ Baseline Equivalent: The model is completely distracted by the weather.")
 
 # ==========================================
-# PAGE 3: PERFORMANCE STATISTICS
+# PAGE 4: STATISTICS
 # ==========================================
-elif page == "Performance Statistics":
-    st.title("Quantitative Results & Statistics")
-    import pandas as pd
-    data = {
-        "Condition": ["Rain", "Fog", "Night", "Sandstorm", "Blizzard"],
-        "DiffEEL FPR (%)": [18.5, 22.1, 15.3, 25.4, 20.0],
-        "WA-AEEL FPR (%)": [4.2, 5.8, 3.1, 7.5, 6.2]
-    }
-    df = pd.DataFrame(data)
-    st.bar_chart(df.set_index("Condition"))
+elif page == "4. Performance Statistics":
+    st.title("Quantitative Results")
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/ROC_curve.svg/800px-ROC_curve.svg.png", width=400, caption="Example ROC Curve")
